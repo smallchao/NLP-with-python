@@ -23,10 +23,9 @@ from wordcloud import WordCloud
 FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 import warnings; warnings.filterwarnings(action='ignore')
 
-from algo_distance import cosin_sim
 
 #========================================================
-#  文件加载
+#  前置技术
 #========================================================
 
 def load_data(filename):
@@ -46,6 +45,22 @@ def load_data(filename):
         data = pd.read_pickle(os.path.join(FILE_DIR, filename))
     return data
 
+def cosin_sim(p, q):
+    ''' 
+    计算两个向量的余弦相似度
+    INPUT  -> 长度一致的向量1、向量2
+    '''
+    dot_product = 0.0
+    normA = 0.0
+    normB = 0.0
+    for a,b in zip(p, q):
+        dot_product += a*b
+        normA += a**2
+        normB += b**2
+    if normA==0.0 or normB==0.0:
+        return None
+    else:
+        return dot_product / ((normA*normB)**0.5)
 #========================================================
 #  断句
 #========================================================
