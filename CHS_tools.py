@@ -1,8 +1,13 @@
 #-*- coding:utf-8 -*-
 import pandas as pd
-import numpy as np
-import os,re,math,sklearn,random,jieba,gensim
+import numpy as np 
+import networkx as nx
+import os,re,math,sklearn,random,jieba,gensim,requests,json,folium,webbrowser,difflib
+from folium.plugins import HeatMap
 import matplotlib.pyplot as plt
+# 设置matplotlib正常显示中文
+plt.rcParams['font.sans-serif']=['SimHei']   # 用黑体显示中文
+plt.rcParams['axes.unicode_minus']=False 
 from collections import Counter
 from gensim import corpora, models, similarities
 from gensim.models import word2vec
@@ -14,8 +19,11 @@ from sklearn.svm import SVC
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 import xgboost as xgb
+from wordcloud import WordCloud
 FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 import warnings; warnings.filterwarnings(action='ignore')
+
+from algo_distance import cosin_sim
 
 #========================================================
 #  文件加载
@@ -39,7 +47,7 @@ def load_data(filename):
     return data
 
 #========================================================
-#  分句/分词
+#  断句
 #========================================================
 
 def doc2sentences(doc):
@@ -50,19 +58,23 @@ def doc2sentences(doc):
     '''
     cutLineFlag = '\?|\？|\!|\！|\。|\;|\；|\…|\【|\】'
     sentences = []
-    doc = re.sub(r'\n+','。',doc)
+    doc = re.sub(r'\n+','。',doc)  # 换行改成句号（标题段无句号的情况） 
     doc = doc.replace('。。','。')
     doc = doc.replace('？。','。')
-    doc = doc.replace('！。','。')
+    doc = doc.replace('！。','。')  # 删除多余的句号
     sent_cut = re.split(cutLineFlag, str(doc))
     for sentence in sent_cut:
-        if len(sentence) < 4:
+        if len(sentence) < 4: # 删除换行符、一个字符等
             continue
         sentence = sentence.strip('　 ')
         sentences.append(sentence)
     return sentences
 
-def tokenization(doc, userlist=False, stopwords=True):
+#========================================================
+#  分词
+#========================================================
+
+def tokenization(doc, userlist=False, stopwords=False):
     '''
     分词功能
     INPUT  -> 输入文本, 是否使用自定义词典, 是否过滤停用词
@@ -71,18 +83,20 @@ def tokenization(doc, userlist=False, stopwords=True):
     try:
         if userlist:
             jieba.load_userdict(FILE_DIR+"/userdict.txt")
-        # 清理html标签
-        html_cleaner = re.compile(r'<[^>]+>', re.S)
-        doc = html_cleaner.sub('', doc)
-        wordlist = jieba.lcut(doc, cut_all=False)
+        cleaner = re.compile(r'<[^>]+>',re.S)
+        doc_clean = cleaner.sub('', doc)
+        wordlist = jieba.lcut(doc_clean, cut_all=False)
+        # 去数字
         wordlist = [v for v in wordlist if not str(v).isdigit()]
+        # 去左右空格
         wordlist = list(filter(lambda x:x.strip(), wordlist))
-        wordlist = list(filter(lambda x:len(x)>1, wordlist))
+        # 去掉长度小于1的词
+        # wordlist = list(filter(lambda x:len(x)>1, wordlist))
         # 过滤标点符号(一般的中文文本分析都不需要标点)
-        wordlist = list(filter(lambda x:x not in ['，',',','。','.','?','？','、',':','：','!','！','(',')','（','）','《','》','-','`','~','#','@','&','*','$','%','^','+','_','/','“','”','[',']','{','}'], wordlist)) 
+        wordlist = list(filter(lambda x:x not in ['，',',','。','?','？','、',':','：','!','！','(',')','（','）','《','》','-','`','~','#','@','&','*','$','%','^','+','_','/','“','”','[',']','{','}'], wordlist)) 
         if stopwords:
             # stopwords = pd.read_table(FILE_DIR+"/stopwords.txt").values
-            stopwords = set('的 和 会 是 具有 形成 可以 通过'.split())
+            stopwords = set('的 和 会 具有 形成 可以 通过'.split())
             wordlist = list(filter(lambda x:x not in stopwords, wordlist))
         return wordlist
     except Exception:
@@ -100,11 +114,121 @@ def doc2words(doc, sent_cut=True):
         for sentence in sentences:
             wordlist.append(tokenization(sentence))
     else:
-        wordlist.append(tokenization(doc))
+        for word in tokenization(doc):
+            wordlist.append(word)
     return wordlist
 
 #========================================================
-#  构建词典
+#  文本可视化:基于文本内容
+#  词云、分布图 和 Document Cards
+#========================================================
+def image_wordcloud(text, pil_im):
+    '''
+    生成词云图
+    INPUT  -> 文本, 图像文件
+    '''
+    mask_image_arr = np.array(pil_im, 'f')
+    # 通过jieba分词进行分词并通过空格分隔
+    wordlist_after_jieba = jieba.cut(text, cut_all = False)
+    wordlist_space_split = " ".join(wordlist_after_jieba)
+    # 生成词云
+    cloud = WordCloud(font_path='C:/Users/Windows/fonts/simkai.ttf',  # 英文的不导入也并不影响，若是中文的或者其他字符需要选择合适的字体包
+                      background_color='white',  # 设置背景颜色
+                      mask=mask_image_arr,    # 设置掩膜,产生词云背景的区域
+                      max_words=2000,    # 设置最大显示的字数
+                      max_font_size=80,  # 设置字体最大值
+                      random_state=40,    # 设置有多少种配色方案
+                      margin=5).generate(wordlist_space_split)
+    # 保存图片
+    cloud.to_file(os.path.join(FILE_DIR, 'my_wordcloud.png'))
+
+
+#========================================================
+#  文本可视化:基于文本关系
+#  树状图、节点连接的网络图、力导向图、叠式图和 Word Tree
+#========================================================
+
+def plot_network(table):
+    '''
+    绘制网络关系图
+    INPUT  -> 文本, 图像文件
+    '''
+    # 所有节点(list形式)
+    source = table['source'].values.tolist()
+    target = table['target'].values.tolist()
+    nodes = list(set(source + source))
+    # 所有的边(list形式,元素是成对的节点)
+    edges = [(table.loc[index,'source'], table.loc[index,'target']) for index in table.index]   
+    edges =  list(set(edges))
+
+    colors = ['red', 'green', 'blue', 'yellow']
+    
+    G = nx.Graph()  # 分析图
+    # G = nx.DiGraph()  # 有向图
+    # G = nx.Multigraphs()  # 多边图
+    # G = nx.MultiDiGraph()  # 多边有向图
+    # G = nx.path_graph()  # 线形图
+    # G = nx.cycle_graph()  # 环形图
+    # G = nx.cubical_graph()  # 立方体图
+    # G = nx.petersen_graph()  # 彼得森图
+
+    # 添加节点列表
+    G.add_nodes_from(nodes)
+    # 添加边列表
+    G.add_edges_from(edges)
+
+    pos = nx.random_layout(G)  # 节点位置为随机分布
+    # pos = nx.circular_layout(G)  # 节点位置为环形分布
+    # pos = nx.spectral_layout(G)  # 节点位置为谱分布
+    
+    # 作图,设置节点,边,标签
+    nx.draw_networkx_nodes(G, pos, alpha=0.2, node_size=1200, node_color=colors)
+    nx.draw_networkx_edges(G, pos, node_color='r', alpha=0.3, style='dashed')
+    nx.draw_networkx_labels(G, pos, font_family='sans-serif', alpha=0.5, font_size=5)
+
+    # nx.draw_circular(G)
+    # nx.draw(G, with_labels=True, node_size=1000, node_color = colors)
+    
+    plt.show() 
+
+#========================================================
+#  文本可视化:基于多层面信息
+#  地理热力图、ThemeRiver、SparkClouds、TextFlow 和基于矩阵视图的情感分析可视化
+#========================================================
+
+def getlonlat_by_address(address):
+    '''
+    地理编码:将地理名词通过高德地图转换为经纬度
+    INPUT  -> 地理名词
+    OUTPUT -> 高德坐标
+    '''
+    url = 'https://restapi.amap.com/v3/geocode/geo'
+    key = '5bdc284755f32a8f48a5c179507a551d'
+    uri = url+'?'+'address='+address+'&output=json&key='+key
+    res = requests.get(uri).text
+    result = json.loads(res)['geocodes'][0]['location']
+    return result
+
+def plot_address(table):
+    '''
+    绘制地图热力图
+    INPUT  -> 地理数据文件
+    '''
+    lon = np.array(table['lon'])
+    lat = np.array(table['lat'])
+    pop = np.array(table['count'], dtype=float)
+    # 将数据制作成[lats,lons,weights]的形式
+    data_box = [[lon[i],lat[i],pop[i]] for i in range(len(table['lon']))]
+    # 绘制map，初始缩放比例5倍
+    map_osm = folium.Map(location=[35, 110], zoom_start=5)
+    # 将热力图加到前面建立的地图中
+    HeatMap(data_box).add_to(map_osm)
+    map_osm.save(os.path.join(FILE_DIR, 'hot.html'))
+    webbrowser.open(os.path.join(FILE_DIR, 'hot.html'))
+
+#========================================================
+#  文本向量化:稀疏编码，缺乏意义表达
+#  包括one-hot向量化、tf向量化、tf-idf向量化、哈希向量化
 #========================================================
 
 def build_dictionary(wordlist):
@@ -113,14 +237,11 @@ def build_dictionary(wordlist):
     INPUT  -> 分词列表
     OUTPUT -> 词典
     '''
+    # 求并集
     words = [x for item in wordlist for x in item]
+    # 去重
     dictionary = sorted(set(words), key=words.index)
     return dictionary
-
-#========================================================
-#  文本向量化(稀疏编码)
-#  包括one-hot编码、tf编码、tf-idf编码、哈希向量化文本
-#========================================================
 
 def doc2onehot(doc, dictionary):
     '''
@@ -129,6 +250,7 @@ def doc2onehot(doc, dictionary):
     OUTPUT -> one-hot编码
     '''
     wordlist = doc2words(doc)
+    # V是编码维度
     V = len(dictionary)
     onehot = np.zeros(V)
     for line in wordlist:
@@ -145,6 +267,7 @@ def doc2tf(doc, dictionary):
     OUTPUT -> tf编码
     '''
     wordlist = doc2words(doc)
+    # V是编码维度
     V = len(dictionary)
     tf = np.zeros(V)
     for line in wordlist:
@@ -161,65 +284,36 @@ def doc2tf_sk(doc, dictionary):
     OUTPUT -> tf编码
     '''
     wordlist = tokenization(doc)
-    wordlist = ' '.join(wordlist)
+    wordlist = ' '.join(wordlist)  # 转换为空格分隔
     vectorizer = CountVectorizer(vocabulary=dictionary,
-                                 token_pattern='(?u)\\b\\w+\\b', # 匹配字符,有至少一个文字类字符
+                                 token_pattern='(?u)\\b\\w+\\b', # 匹配字符,有至少一个文字类字符(A-Z、a-z、0-9以及下划线_),+代表至少
                                  # token_pattern='(?u)\\b\\w\\w+\\b', # 匹配字符,有至少两个文字类字符
+                                 # lowercase=True,  # 转换为小写
                                  )
     tf = vectorizer.fit_transform([wordlist]).toarray()
     return tf[0]
 
-def docs2tfidf(docs):
-    '''
-    tf-idf编码
-    一个词的权重由TF * IDF 表示，其中TF表示词频，即一个词在这篇文本中出现的频率；IDF表示逆文档频率，即一个词在所有文本中出现的频率倒数。
-    因此，一个词在某文本中出现的越多，在其他文本中出现的越少，则这个词能很好地反映这篇文本的内容，权重就越大。
-    INPUT  -> 文本集
-    OUTPUT -> 文本集的tf-idf编码
-    '''
-    wordlist = []
-    for doc in docs:
-        wordlist.append(doc2words(doc, False))
-    dictionary = build_dictionary(wordlist[0])
-    # V是编码维度,M是文档数量
-    V = len(dictionary)
-    M = len(docs)
-    onehot = np.zeros((M,V))
-    tf = np.zeros((M,V))
-    for i, line in enumerate(docs):
-        for word in line:
-            if word in dictionary:
-                pos = dictionary.index(word)
-                onehot[i][pos] = 1
-                tf[i][pos] += 1
-    row_sum = tf.sum(axis=1) 
-    # 计算TF, TF(词频) = 某词在文章中出现次数/文章总词数
-    tf = tf/row_sum[:,np.newaxis]   # [:,np.newaxis]作用类似于行列转置
-    # 列相加，表示有多少样本包含词袋某词, 得到DF
-    df = onehot.sum(axis=0) 
-    # 计算IDF, IDF(逆文档频率) = log(语料库的文档总数/(包含该词的文档数+1)) 
-    idf = list(map(lambda x:math.log10((M+1)/(x+1)), df))
-    # 计算TFIDF
-    tfidf = tf*np.array(idf)
-    return tfidf
-
 def docs2tfidf_sk(docs):
     '''
-    tf-idf编码(基于sklearn)
+    tf-idf编码(基于sklearn),适合文本聚类、内容比较
+    一个词的权重由TF * IDF 表示，其中TF表示词频，即一个词在这篇文本中出现的频率；IDF表示逆文档频率，即一个词在所有文本中出现的频率倒数。
+    因此，一个词在某文本中出现的越多，在其他文本中出现的越少，则这个词能很好地反映这篇文本的内容，权重就越大。
     INPUT  -> 文本集
     OUTPUT -> 文本集的tf-idf编码
     '''
     temp = []
     wordlist = []
     for doc in docs:
-        temp.append(doc2words(doc))
+        temp.append(doc2words(doc, False))
         wordlist.append(' '.join(tokenization(doc)))
-    dictionary = build_dictionary(temp[0])
+    dictionary = build_dictionary(temp)
     vectorizer = TfidfVectorizer(vocabulary=dictionary,
-                                 token_pattern='(?u)\\b\\w+\\b', # 匹配字符,有至少一个文字类字符
+                                 token_pattern='(?u)\\b\\w+\\b', # 匹配字符,有至少一个文字类字符(A-Z、a-z、0-9以及下划线_),+代表至少
                                  # token_pattern='(?u)\\b\\w\\w+\\b', # 匹配字符,有至少两个文字类字符
+                                 # lowercase=True,  # 转换为小写
                                  )
     tfidf = vectorizer.fit_transform(wordlist).toarray()
+    print(tfidf)
     return tfidf
 
 def doc2hashing_sk(doc):
@@ -231,16 +325,18 @@ def doc2hashing_sk(doc):
     OUTPUT -> hashing编码
     '''
     wordlist = tokenization(doc)
-    wordlist = ' '.join(wordlist)
-    vectorizer = HashingVectorizer(n_features=200,  # 向量长度 
-                                   token_pattern='(?u)\\b\\w+\\b', # 匹配字符,有至少一个文字类字符
+    wordlist = ' '.join(wordlist)  # 转换为空格分隔
+    vectorizer = HashingVectorizer(n_features=10,  # 向量长度 
+                                   token_pattern='(?u)\\b\\w+\\b', # 匹配字符,有至少一个文字类字符(A-Z、a-z、0-9以及下划线_),+代表至少
                                    # token_pattern='(?u)\\b\\w\\w+\\b', # 匹配字符,有至少两个文字类字符
+                                   # lowercase=True,  # 转换为小写
                                    )
     hashing = vectorizer.fit_transform([wordlist]).toarray()
     return hashing[0]
 
 #========================================================
-#  文本向量化(稠密编码):gensim版词向量编码
+#  文本向量化:稠密编码
+#  词嵌入向量(CBOW模型和Skip-gram模型)
 #========================================================
 
 def wordvec_corpus(path, filename):
@@ -282,6 +378,22 @@ def wordvec_train(train_file, save_model_name):
     # 以二进制类型保存模型以便重用
     model.wv.save_word2vec_format(model_path, binary=True)
 
+def doc2vec_wv(doc, save_model_name):
+    '''
+    词向量编码(word2vec版)
+    INPUT  -> 输入文本, 训练好的模型
+    OUTPUT -> 词向量编码
+    '''
+    wordlist = doc2words(doc, False)
+    model = gensim.models.KeyedVectors.load_word2vec_format(FILE_DIR+'/'+save_model_name+'.bin', binary=True)
+
+    doc_vecs = []
+    for word in wordlist:
+        doc_vecs.append(model[word].reshape((1, 150)))
+    result = np.array(np.concatenate(doc_vecs), dtype='float')
+
+    return result
+
 def wordvec_sim(word1, word2, save_model_name):
     '''
     比较两词相似度
@@ -308,24 +420,8 @@ def wordvec_most_sim(word, save_model_name):
         print(item[0], item[1])  # 打印相关词和相关性
     print("-------------------------------\n")
 
-def doc2vec_wv(doc, save_model_name):
-    '''
-    词向量编码(word2vec版)
-    INPUT  -> 输入文本, 训练好的模型
-    OUTPUT -> 词向量编码
-    '''
-    wordlist = doc2words(doc, False)[0]
-    model = gensim.models.KeyedVectors.load_word2vec_format(FILE_DIR+'/'+save_model_name+'.bin', binary=True)
-
-    doc_vecs = []
-    for word in wordlist:
-        doc_vecs.append(model[word].reshape((1, 150)))
-    result = np.array(np.concatenate(doc_vecs), dtype='float')
-
-    return result
-
 #========================================================
-#  应用--关键词提取
+#  关键词提取
 #========================================================
 
 def keyword_TF(doc, topK=10):
@@ -373,7 +469,7 @@ def keyword_TextRank(doc, n=5, stop_word_file_path=False):
     return result
 
 #========================================================
-#  应用--主题提取
+#  主题提取
 #========================================================
 
 def topic_LSI(doc, n):
@@ -383,10 +479,13 @@ def topic_LSI(doc, n):
     OUTPUT -> 文本关键词
     '''
     wordlist = doc2words(doc)
+    # 构建词典
     dictionary = corpora.Dictionary(documents=wordlist)
+    # 语料词频,形成词袋
     corpus = [dictionary.doc2bow(sentence) for sentence in wordlist]
+    # lsi模型，num_topics是主题的个数
     lsi = gensim.models.lsimodel.LsiModel(corpus=corpus, id2word=dictionary, num_topics=n)
-    # 打印所有主题，每个主题显示8个词
+    # 打印所有主题，每个主题显示5个词
     for topic in lsi.print_topics(num_topics=n, num_words=8):
         print(topic)
 
@@ -397,15 +496,18 @@ def topic_LDA(doc, n):
     OUTPUT -> 文本关键词
     '''
     wordlist = doc2words(doc)
+    # 构建词典
     dictionary = corpora.Dictionary(documents=wordlist)
+    # 语料词频,形成词袋
     corpus = [dictionary.doc2bow(sentence) for sentence in wordlist]
+    # lda模型，num_topics是主题的个数
     lda = gensim.models.ldamodel.LdaModel(corpus=corpus, id2word=dictionary, num_topics=n)
-    # 打印所有主题，每个主题显示8个词
+    # 打印所有主题，每个主题显示5个词
     for topic in lda.print_topics(num_topics=n, num_words=8):
         print(topic)
 
 #========================================================
-#  应用--文本摘要
+#  文本摘要
 #========================================================
 
 class Summary():
@@ -415,13 +517,13 @@ class Summary():
         '''
         cutLineFlag = '\?|\？|\!|\！|\。|\;|\；|\…|\【|\】'
         sentences = []
-        doc = re.sub(r'\n+','。',doc)
+        doc = re.sub(r'\n+','。',doc)  # 换行改成句号（标题段无句号的情况） 
         doc = doc.replace('。。','。')
         doc = doc.replace('？。','。')
-        doc = doc.replace('！。','。')
+        doc = doc.replace('！。','。')  # 删除多余的句号
         sent_cut = re.split(cutLineFlag, str(doc))
         for sentence in sent_cut:
-            if len(sentence) < 4:
+            if len(sentence) < 4: # 删除换行符、一个字符等
                 continue
             sentence = sentence.strip('　 ')
             sentences.append(sentence)
@@ -564,7 +666,49 @@ class Summary():
         return keysents
 
 #========================================================
-#  应用--文本分类
+#  文本比较
+#========================================================
+
+def readline(filename):
+    '''
+    行读取
+    INPUT  -> 文件名
+    OUTPUT -> 行读取结果
+    '''
+    try:
+        with open(filename, 'r') as f:
+            return f.readlines()
+    except IOError:
+        print("ERROR: 没有找到文件:%s或读取文件失败！" % filename)
+
+def compare_doc(file1, file2):
+    '''
+    文档比较
+    INPUT  -> 文件1, 文件2
+    OUTPUT -> 差分结果
+    '''
+    doc1 = readline(file1)
+    doc2 = readline(file2)
+    d = difflib.HtmlDiff()
+    result = d.make_file(doc1, doc2)
+    print(result)
+    with open('result.html', 'w', encoding='utf-8') as f:
+        f.writelines(result)
+
+def compare_tdidf(doc1, doc2):
+    '''
+    基于tfidf的文档相似度
+    INPUT  -> 文本1, 文本2
+    OUTPUT -> 相似度
+    '''
+    docs = []
+    docs.append(doc1)
+    docs.append(doc2)
+    tfidf = docs2tfidf_sk(docs)
+    return cosin_sim(tfidf[0], tfidf[1])
+
+#========================================================
+#  文本分类
 #========================================================
 
 def classifier_nb(docs, labels):
@@ -573,14 +717,13 @@ def classifier_nb(docs, labels):
     INPUT  -> 文本集, 标签
     OUTPUT -> 训练好的分类模型
     '''
-    doc_hashing = []
-    for doc in docs:
-        doc_hashing.append(doc2hashing_sk(doc))
-    # tfidf = docs2tfidf_sk(docs)
+    HashCode = []
+    for doc in doc:
+        HashCode.append(doc2hashing_sk(docs))
 
-    x_train, x_valid, y_train, y_valid = train_test_split(doc_hashing, labels, test_size=0.2)
+    x_train, x_valid, y_train, y_valid = train_test_split(HashCode, labels, test_size=0.10)
 
-    nb_model = GaussianNB()
+    nb_model = MultinomialNB()
     nb_model.fit(x_train, y_train)
 
     print(nb_model.score(x_valid, y_valid))
@@ -593,12 +736,11 @@ def classifier_svm(docs, labels):
     INPUT  -> 文本集, 标签
     OUTPUT -> 训练好的分类模型
     '''
-    doc_hashing = []
-    for doc in docs:
-        doc_hashing.append(doc2hashing_sk(doc))
-    # tfidf = docs2tfidf_sk(docs)
+    HashCode = []
+    for doc in doc:
+        HashCode.append(doc2hashing_sk(docs))
 
-    x_train, x_valid, y_train, y_valid = train_test_split(doc_hashing, labels, test_size=0.10)
+    x_train, x_valid, y_train, y_valid = train_test_split(HashCode, labels, test_size=0.10)
 
     svm_model = SVC(kernel='linear')
     svm_model.fit(x_train, y_train)
@@ -613,12 +755,11 @@ def classifier_xgb(docs, labels):
     INPUT  -> 文本集, 标签
     OUTPUT -> 训练好的分类模型
     '''
-    doc_hashing = []
-    for doc in docs:
-        doc_hashing.append(doc2hashing_sk(doc))
-    # tfidf = docs2tfidf_sk(docs)
+    HashCode = []
+    for doc in doc:
+        HashCode.append(doc2hashing_sk(docs))
 
-    x_train, x_valid, y_train, y_valid = train_test_split(doc_hashing, labels, test_size=0.20)
+    x_train, x_valid, y_train, y_valid = train_test_split(HashCode, labels, test_size=0.10)
 
     dtrain = xgb.DMatrix(x_train, y_train)
     dvalid = xgb.DMatrix(x_valid, y_valid)
@@ -634,12 +775,12 @@ def classifier_xgb(docs, labels):
             'eval_metric': 'merror',  # logloss
             'num_class': 2, # 类别数,与multi:softmax并用
             'gamma': 0.1,  # 用于控制是否后剪枝的参数，越大越保守，一般0.1、0.2
-            'max_depth': 10,   # 构建树的深度，越大越容易过拟合
+            'max_depth': 8,   # 构建树的深度，越大越容易过拟合
             'alpha': 0, # L1正则化系数
             'lambda': 10, # 控制模型复杂度的权重值的L2正则化项参数,参数越大越不容易过拟合
-            'subsample': 0.7,   # 随机采样训练样本 训练实例的子采样比
+            'subsample': 0.8,   # 随机采样训练样本 训练实例的子采样比
             'colsample_bytree': 0.5,  # 生成树时进行列采样
-            'min_child_weight': 1,  
+            'min_child_weight': 3,  
             'silent': 0, # 设置成1则没有运行信息输出
             'eta': 0.03,  # 学习率
             'nthread':-1, # cpu线程数
@@ -647,24 +788,15 @@ def classifier_xgb(docs, labels):
             "seed": 10   # 随机种子
             }
 
-    xgb_model = xgb.train(params, dtrain, 2000, evals=watchlist, early_stopping_rounds=300, verbose_eval=True)
+    xgb_model = xgb.train(params, dtrain, 1000, evals=watchlist, early_stopping_rounds=300, verbose_eval=True)
 
     # 保存模型
     xgb_model.save_model(FILE_DIR+'\\xgb_weight.model')
     
     return xgb_model
 
-def classifier_pred(doc):
-    # 模型载入
-    saved_model = xgb.Booster(model_file=FILE_DIR+'\\xgb_weight.model')
-    text = doc2hashing_sk(doc)
-    X_test = xgb.DMatrix([text])
-    # 数据预测
-    model_pred = saved_model.predict(X_test)
-    return model_pred
-
 #========================================================
-#  应用--文本聚类
+#  文本聚类
 #========================================================
 
 def Cluster_kmeans(docs, numClass):
@@ -674,7 +806,7 @@ def Cluster_kmeans(docs, numClass):
     OUTPUT -> 训练好的聚类模型
     '''
     tfidf = docs2tfidf_sk(docs)
-    pca = PCA(n_components=10) 
+    pca = PCA(n_components=10)  # 降维
     tfidf_new = pca.fit_transform(tfidf)
 
     model = KMeans(n_clusters=numClass, max_iter=10000, init="k-means++", tol=1e-6)
