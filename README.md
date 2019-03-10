@@ -1,1 +1,1 @@
-# NLP_by_python中文自然语言处理工具及应用简书地址: https://www.jianshu.com/nb/34952285- tools.py  分句、分词、词向量化、文本比较- TM_cluster.py  文本挖掘之聚类- TM_classifier.py  文本挖掘之分类- TM_visualization.py  文本挖掘之可视化- NLU_topic.py  自然语言理解之主题建模- NLG_summarization.py  自然语言生成之文本摘要
+# NLP_by_python中文自然语言处理工具及应用简书地址: https://www.jianshu.com/nb/34952285- tools.py  分句、分词、词向量化、文本比较- TM_cluster.py  文本挖掘之聚类- TM_classifier.py  文本挖掘之分类- TM_visualization.py  文本挖掘之可视化- NLU_topic.py  自然语言理解之主题建模- NLU_tokenization.py  自然语言理解之分词技术- NLG_summarization.py  自然语言生成之文本摘要
