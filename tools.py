@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np 
 import os,re,math,sklearn,random,jieba,gensim,requests,json,difflib
+from flashtext.keyword import KeywordProcessor
 from collections import Counter
 from gensim import corpora, models, similarities
 from gensim.test.utils import datapath
@@ -31,6 +32,19 @@ def load_data(filename):
     elif postfix == '.pkl':
         data = pd.read_pickle(os.path.join(FILE_DIR, filename))
     return data
+
+def fastcleaner(docs, replacewords):
+    '''
+    语料清洗工具, FastText可用于快速进行大规模语料库的文本搜索与替换
+    INPUT  -> 文档集(词之间为空格)、替换词表
+    '''
+    docs_new = []
+    keyword_processor = KeywordProcessor()
+    for doc in docs:
+        for word1, word2 in replacewords:
+            keyword_processor.add_keyword(word1, word2)  # 前面一个词为定位词, 后面一个词为替换
+        docs_new.append(keyword_processor.replace_keywords(doc))
+    return docs_new
 
 def cosin_sim(p, q):
     ''' 
