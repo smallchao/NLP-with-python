@@ -4,7 +4,8 @@ import numpy as np
 import os,re,math,sklearn,random,jieba,gensim,requests,json,difflib
 from collections import Counter
 from gensim import corpora, models, similarities
-from gensim.models import word2vec
+from gensim.test.utils import datapath
+from gensim.models import word2vec, fasttext
 from gensim.models.doc2vec import Doc2Vec, LabeledSentence
 from sklearn.feature_extraction.text import CountVectorizer,TfidfVectorizer,HashingVectorizer
 FILE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -232,7 +233,12 @@ def doc2hashing_sk(doc):
 #  词嵌入向量(CBOW模型和Skip-gram模型)
 #========================================================
 
-def wordvec_corpus(path, filename):
+#========================================================
+#  文本向量化:稠密编码
+#  gensim词嵌入、fastText词嵌入
+#========================================================
+
+def make_corpus(path, filename):
     '''
     对原始语料预处理,生成可供训练的语料
     INPUT  -> 文件目录, 文件名
@@ -250,30 +256,55 @@ def wordvec_corpus(path, filename):
     fo.write(str_out)
     fo.close()
 
-def wordvec_train(train_file, save_model_name):
+def word2vec_train(train_file, save_model_name):
     '''
-    训练词向量模型
+    训练词向量模型(word2vec版)
     INPUT  -> 训练语料地址, 模型保存的名称
     '''
     corpus_path = FILE_DIR+'/'+train_file
     model_path = FILE_DIR+'/'+save_model_name+'.bin'
 
-    tokenized = word2vec.Text8Corpus(corpus_path)
+    corpus_file = word2vec.Text8Corpus(corpus_path)
     # 训练skip-gram模型
-    model = gensim.models.Word2Vec(tokenized,  # 训练语料
-                                   sg=1,  # 1是skip-gram算法(对低频词敏感),0是CBOW算法
-                                   size=150,  # 是输出词向量的维数,一般取100-200间(太小会导致映射冲突,太大消耗内存)
-                                   window=5,  # 句子中当前词语目标词之间的最大距离(前看n个词,后看n个词)
-                                   min_count=1, # 对词进行过滤,小于n的词会被忽视,默认为5
-                                   workers=4,  # 并发训练时候的线程数，仅当Cython安装的情况下才会起作用
-                                   )
+    model = word2vec.Word2Vec(corpus_file,  # 训练语料
+                              sg=1,  # 1是skip-gram算法(对低频词敏感),0是CBOW算法
+                              size=150,  # 是输出词向量的维数,一般取100-200间(太小会导致映射冲突,太大消耗内存)
+                              window=5,  # 句子中当前词语目标词之间的最大距离(前看n个词,后看n个词)
+                              min_count=1, # 对词进行过滤,小于n的词会被忽视,默认为5
+                              alpha=0.025,  # 学习率
+                              workers=4,  # 并发训练时候的线程数，仅当Cython安装的情况下才会起作用
+                              iter=5,  # 训练周期,默认是5
+                              )
     # model.save(FILE_DIR+'/'+save_model_name)
     # 以二进制类型保存模型以便重用
     model.wv.save_word2vec_format(model_path, binary=True)
 
-def doc2vec_wv(doc, save_model_name):
+def fastText_train(train_file, save_model_name):
     '''
-    词向量编码(word2vec版)
+    训练词向量模型(fastText版)
+    INPUT  -> 训练语料地址, 模型保存的名称
+    '''
+    corpus_path = FILE_DIR+'/'+train_file
+    model_path = FILE_DIR+'/'+save_model_name+'.bin'
+
+    corpus_file = datapath(corpus_path)
+    model = fasttext.FastText(corpus_file, # 训练语料
+                              sg=1,  # 1是skip-gram算法(对低频词敏感),0是CBOW算法
+                              size=150,  # 是输出词向量的维数,一般取100-200间(太小会导致映射冲突,太大消耗内存) 
+                              window=5,  # 句子中当前词语目标词之间的最大距离(前看n个词,后看n个词) 
+                              min_count=1, # 对词进行过滤,小于n的词会被忽视,默认为5
+                              alpha=0.025,  # 学习率
+                              workers=4,  # 并发训练时候的线程数，仅当Cython安装的情况下才会起作用
+                              iter=5,  # 训练周期,默认是5
+                              )
+
+    # model.save(FILE_DIR+'/'+save_model_name)
+    # 以二进制类型保存模型以便重用
+    model.wv.save_word2vec_format(model_path, binary=True)
+
+def doc2vec(doc, save_model_name):
+    '''
+    基于词嵌入的文本向量化编码
     INPUT  -> 输入文本, 训练好的模型
     OUTPUT -> 词向量编码
     '''
