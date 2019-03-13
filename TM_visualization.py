@@ -56,14 +56,17 @@ def plot_network(table):
 
     colors = ['red', 'green', 'blue', 'yellow']
     
-    G = nx.Graph()  # 分析图
-    # G = nx.DiGraph()  # 有向图
-    # G = nx.Multigraphs()  # 多边图
-    # G = nx.MultiDiGraph()  # 多边有向图
+    G = nx.Graph()  # 无多重边无向图
+    # G = nx.DiGraph()  # 无多重边有向图
+    # G = nx.Multigraphs()  # 有多重边无向图
+    # G = nx.MultiDiGraph()  # 有多重边有向图
+	
+	# H = nx.path_graph(10) # add 10 线形图节点
+	# H = nx.path_graph(10) # add 10 环形图节点
+	# H = nx.path_graph()   # add 立方体图节点
+	# H = nx.petersen_graph() # add 彼得森图节点
+	# G.add_nodes_from(H)
     # G = nx.path_graph()  # 线形图
-    # G = nx.cycle_graph()  # 环形图
-    # G = nx.cubical_graph()  # 立方体图
-    # G = nx.petersen_graph()  # 彼得森图
 
     # 添加节点列表
     G.add_nodes_from(nodes)
