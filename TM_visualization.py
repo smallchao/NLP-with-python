@@ -41,50 +41,59 @@ def image_wordcloud(text, pil_im):
 #  树状图、节点连接的网络图、力导向图、叠式图和 Word Tree
 #========================================================
 
-def plot_network(table):
+def plot_network(table, direct, weight):
     '''
     绘制网络关系图
-    INPUT  -> 文本, 图像文件
+    INPUT  -> 表格, 连接形式, 是否有权重
     '''
-    # 所有节点(list形式)
-    source = table['source'].values.tolist()
-    target = table['target'].values.tolist()
-    nodes = list(set(source + source))
-    # 所有的边(list形式,元素是成对的节点)
-    edges = [(table.loc[index,'source'], table.loc[index,'target']) for index in table.index]   
-    edges =  list(set(edges))
-
     colors = ['red', 'green', 'blue', 'yellow']
     
-    G = nx.Graph()  # 无多重边无向图
-    # G = nx.DiGraph()  # 无多重边有向图
-    # G = nx.Multigraphs()  # 有多重边无向图
-    # G = nx.MultiDiGraph()  # 有多重边有向图
+    # 从pandas快速构建图
+	# G = nx.from_pandas_edgelist(routes_us, source = 'source', target = 'target', edge_attr = 'numbers', create_using = nx.DiGraph())
 	
-	# H = nx.path_graph(10) # add 10 线形图节点
-	# H = nx.path_graph(10) # add 10 环形图节点
-	# H = nx.path_graph()   # add 立方体图节点
-	# H = nx.petersen_graph() # add 彼得森图节点
-	# G.add_nodes_from(H)
-    # G = nx.path_graph()  # 线形图
+    # 传统构建图
+    if direct == 'directed':
+        G = nx.DiGraph()  # 无多重边有向图
+    elif direct == 'undirected':
+        G = nx.Graph()   # 无多重边无向图
+    elif direct == 'multi.directed':
+        G = nx.MultiDiGraph()  # 有多重边有向图
+    elif direct == 'multi.undirected':
+        G = nx.MultiGraph()  # 有多重边无向图
 
-    # 添加节点列表
-    G.add_nodes_from(nodes)
-    # 添加边列表
-    G.add_edges_from(edges)
+    # 加载数据(方法一)
+    if weight:
+        edge_list = [tuple(g_list.values()) for g_list in table.edges[['source','target','weight']]]
+        G.add_weighted_edges_from(edge_list)
+    else:
+        edge_list = [tuple(g_list.values()) for g_list in table.edges[['source','target']]]
+        G.add_edges_from(edge_list)
+        # 所有节点(list形式)
+        # source = table['source'].values.tolist()
+        # target = table['target'].values.tolist()
+        # nodes = list(set(source + source))
+        # 所有的边(list形式,元素是成对的节点)
+        # edges = [(table.loc[index,'source'], table.loc[index,'target']) for index in table.index]   
+        # edges =  list(set(edges))
+        # 添加节点列表
+        # G.add_nodes_from(nodes)
+        # 添加边列表
+        # G.add_edges_from(edges)
 
     pos = nx.random_layout(G)  # 节点位置为随机分布
     # pos = nx.circular_layout(G)  # 节点位置为环形分布
     # pos = nx.spectral_layout(G)  # 节点位置为谱分布
-    
-    # 作图,设置节点,边,标签
+	
+	# 作图(方法一)
+    # nx.draw(G, pos = nx.random_layout(G), with_labels=True, font_size =18, node_size=1000, node_color = colors, edge_color = 'r')
+	
+	# 作图(方法二)：分别设置节点,边,标签
     nx.draw_networkx_nodes(G, pos, alpha=0.2, node_size=1200, node_color=colors)
     nx.draw_networkx_edges(G, pos, node_color='r', alpha=0.3, style='dashed')
     nx.draw_networkx_labels(G, pos, font_family='sans-serif', alpha=0.5, font_size=5)
-
-    # nx.draw_circular(G)
-    # nx.draw(G, with_labels=True, node_size=1000, node_color = colors)
     
+	# plt.savefig("network.png")
+	# nx.write_gexf(G, 'network.gexf')  # gexf格式文件可以导入gephi中进行分析
     plt.show() 
 
 #========================================================
